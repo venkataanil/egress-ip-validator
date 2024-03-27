@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: eip-monitor
+  namespace: monitor-eip
+  labels:
+    app: validator
+spec:
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+  - name: eip-validator
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+    image: quay.io/mkennell/eip-checker:latest
+    imagePullPolicy: Always
+    env:
+    - name: EXT_SERVER_HOST
+      value: "1.1.1.1"
+    - name: EXT_SERVER_PORT
+      value: "80"
+    - name: EGRESS_IPS
+      value: "2.2.2.2,3.3.3.3"
+    - name: DELAY_BETWEEN_REQ_SEC
+      value: "2"
+    - name: POD_NAME
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.name
+    - name: POD_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
+    ports:
+    - containerPort: 8080
+    resources:
+      requests:
+        cpu: "50m"
+

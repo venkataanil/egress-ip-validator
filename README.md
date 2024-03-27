@@ -10,3 +10,5 @@ Time it takes in seconds for a connection to have a source IP of EgressIP at sta
 Increments every time EgressIP seen as source IP - increments every X seconds if seen, where X is defined as an env var in `pod.yaml`
 - "scale_non_eip_total"
 Increments every time EgressIP not seen as source IP - increments every X seconds if seen, where X is defined as an env var in `pod.yaml`
+- "scale_failure_total"
+  Increments every time there a connection failure (not status 200) - increments every X seconds if seen, where X is defined as an env var in `pod.yaml`

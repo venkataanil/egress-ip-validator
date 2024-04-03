@@ -112,7 +112,7 @@ func checkDurationForEIPAtStartup(stop <-chan struct{}, wg *sync.WaitGroup, egre
 				continue
 			}
 			log.Printf("checkDurationForEIPAtStartup: Reply with HTTP code %s", res.Status)
-			if res.Status != "200" {
+			if res.StatusCode != http.StatusOK {
 				failure.With(metricsLabel).Inc()
 				continue
 			}

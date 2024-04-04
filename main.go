@@ -23,7 +23,9 @@ const (
 	portEnvKey                = "EXT_SERVER_PORT"
 	egressIPsEnvKey           = "EGRESS_IPS"
 	delayBetweenRequestEnvKey = "DELAY_BETWEEN_REQ_SEC"
+	delayBetweenStartRequestEnvKey = "DELAY_BETWEEN_START_REQ_SEC"
 	reqTimeoutEnvKey          = "REQ_TIMEOUT_SEC"
+	reqStartTimeoutEnvKey     = "REQ_START_TIMEOUT_SEC"
 	podNameEnvKey             = "POD_NAME"
 	podNamespaceEnvKey        = "POD_NAMESPACE"
 	envKeyErrMsg              = "define env key %q"
@@ -34,16 +36,16 @@ const (
 func main() {
 	wg := &sync.WaitGroup{}
 	stop := registerSignalHandler()
-	extHost, extPort, egressIPsStr, podNamespace, podName, delayBetweenReq, timeout := processEnvVars()
+	extHost, extPort, egressIPsStr, podNamespace, podName, delayBetweenStartReq, startTimeout, delayBetweenReq, timeout := processEnvVars()
 	egressIPs := buildEIPMap(egressIPsStr)
-	eipStartUpLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(podNamespace, delayBetweenReq)
+	eipStartUpLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(podNamespace, delayBetweenReq, delayBetweenStartReq)
 	metricsLabel := prometheus.Labels{podNamespace: podName}
 	wg.Add(2)
 	startMetricsServer(stop, wg)
 	url := buildDstURL(extHost, extPort)
 	// begin requests until Egress IP found
 	wg.Add(1)
-	go checkDurationForEIPAtStartup(stop, wg, egressIPs, url, eipStartUpLatency, failure, metricsLabel, delayBetweenReq, timeout)
+	go checkDurationForEIPAtStartup(stop, wg, egressIPs, url, eipStartUpLatency, failure, metricsLabel, delayBetweenStartReq, startTimeout)
 	wg.Add(1)
 	go checkEIPAndNonEIPUntilStop(stop, wg, egressIPs, url, eipTick, nonEIPTick, failure, metricsLabel, delayBetweenReq, timeout)
 	wg.Wait()
@@ -67,7 +69,7 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 				continue
 			}
 			log.Printf("checkEIPAndNonEIPUntilStop: Reply with HTTP code %s", res.Status)
-			if res.Status != "200" {
+			if res.StatusCode != http.StatusOK {
 				failure.With(metricsLabel).Inc()
 				continue
 			}
@@ -163,7 +165,7 @@ func buildEIPMap(egressIPsStr string) map[string]struct{} {
 	return egressIPMap
 }
 
-func processEnvVars() (string, string, string, string, string, int, int) {
+func processEnvVars() (string, string, string, string, string, int, int, int, int) {
 	var err error
 	extHost := os.Getenv(serverEnvKey)
 	if extHost == "" {
@@ -195,6 +197,14 @@ func processEnvVars() (string, string, string, string, string, int, int) {
 			panic(fmt.Sprintf("failed to parse delay between requests: %v", err))
 		}
 	}
+	delayBetweenStartReq := defaultDelayBetweenReqSec
+	delayBetweenStartRequestStr := os.Getenv(delayBetweenStartRequestEnvKey)
+	if delayBetweenStartRequestStr != "" {
+		delayBetweenStartReq, err = strconv.Atoi(delayBetweenStartRequestStr)
+		if err != nil {
+			panic(fmt.Sprintf("failed to parse delay between start requests: %v", err))
+		}
+	}
 	requestTimeout := defaultRequestTimeoutSec
 	reqTimeoutStr := os.Getenv(reqTimeoutEnvKey)
 	if reqTimeoutStr != "" {
@@ -203,7 +213,15 @@ func processEnvVars() (string, string, string, string, string, int, int) {
 			panic(fmt.Sprintf("failed to parse request timeout %q: %v", reqTimeoutStr, err))
 		}
 	}
-	return extHost, extPort, egressIPsStr, podNamespace, podName, delayBetweenReq, requestTimeout
+	requestStartTimeout := defaultRequestTimeoutSec
+	reqStartTimeoutStr := os.Getenv(reqStartTimeoutEnvKey)
+	if reqStartTimeoutStr != "" {
+		requestStartTimeout, err = strconv.Atoi(reqStartTimeoutStr)
+		if err != nil {
+			panic(fmt.Sprintf("failed to parse request timeout %q: %v", reqStartTimeoutStr, err))
+		}
+	}
+	return extHost, extPort, egressIPsStr, podNamespace, podName, delayBetweenStartReq, requestStartTimeout, delayBetweenReq, requestTimeout
 }
 
 func registerSignalHandler() chan struct{} {
@@ -239,12 +257,12 @@ func startMetricsServer(stop <-chan struct{}, wg *sync.WaitGroup) {
 	}()
 }
 
-func buildAndRegisterMetrics(labelName string, delayBetweenReq int) (*prometheus.GaugeVec, *prometheus.GaugeVec, *prometheus.GaugeVec, *prometheus.GaugeVec) {
+func buildAndRegisterMetrics(labelName string, delayBetweenReq, delayBetweenStartReq int) (*prometheus.GaugeVec, *prometheus.GaugeVec, *prometheus.GaugeVec, *prometheus.GaugeVec) {
 	var eipStartUpLatency = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: "scale",
 		Name:      "eip_startup_latency_total",
 		Help: fmt.Sprintf("time it takes in seconds for a connection to have a source IP of EgressIP at startup"+
-			" with polling interval of %d seconds", delayBetweenReq),
+			" with polling interval of %d seconds", delayBetweenStartReq),
 	}, []string{labelName})
 
 	var eipTick = prometheus.NewGaugeVec(prometheus.GaugeOpts{

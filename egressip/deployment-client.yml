@@ -33,7 +33,7 @@ spec:
                 operator: DoesNotExist
       containers:
       - name: client-app
-        image: quay.io/vkommadi/eip-checker:latest
+        image: quay.io/mkennell/eip-checker:latest
         resources:
           requests:
             memory: "10Mi"

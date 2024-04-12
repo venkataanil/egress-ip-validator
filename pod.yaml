@@ -17,7 +17,7 @@ spec:
       capabilities:
         drop:
           - ALL
-    image: quay.io/vkommadi/eip-checker:latest
+    image: quay.io/mkennell/eip-checker:latest
     imagePullPolicy: Always
     env:
     - name: EXT_SERVER_HOST

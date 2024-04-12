@@ -36,7 +36,7 @@ func main() {
 	stop := registerSignalHandler()
 	extHost, extPort, egressIPsStr, delayBetweenStartReq, startTimeout, delayBetweenReq, timeout := processEnvVars()
 	egressIPs := buildEIPMap(egressIPsStr)
-	eipStartUpLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq)
+	eipStartUpLatency, eipRecoveryLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq)
 	wg.Add(2)
 	startMetricsServer(stop, wg)
 	url := buildDstURL(extHost, extPort)
@@ -44,15 +44,17 @@ func main() {
 	wg.Add(1)
 	go checkDurationForEIPAtStartup(stop, wg, egressIPs, url, eipStartUpLatency, failure, delayBetweenStartReq, startTimeout)
 	wg.Add(1)
-	go checkEIPAndNonEIPUntilStop(stop, wg, egressIPs, url, eipTick, nonEIPTick, failure, delayBetweenReq, timeout)
+	go checkEIPAndNonEIPUntilStop(stop, wg, egressIPs, url, eipRecoveryLatency, eipTick, nonEIPTick, failure, delayBetweenReq, timeout)
 	wg.Wait()
 }
 
-func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, url string, eipTick,
-	nonEIPTick *prometheus.Gauge, failure *prometheus.Gauge, delayBetweenReq, timeout int) {
+func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, url string,
+        eipRecoveryLatency *prometheus.Gauge, eipTick, nonEIPTick *prometheus.Gauge, failure *prometheus.Gauge, delayBetweenReq, timeout int) {
 	log.Print("## checkEIPAndNonEIPUntilStop: Polling source IP and increment metric counts for when Egress IP or another IP seen as source IP")
 	defer wg.Done()
 	var done bool
+	start := time.Now()
+	var eipCheckFailed bool
 	client := getHTTPClient(timeout)
 
 	for !done {
@@ -67,6 +69,10 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 			}
 			log.Printf("checkEIPAndNonEIPUntilStop: Reply with HTTP code %s", res.Status)
 			if res.StatusCode != http.StatusOK {
+				if eipCheckFailed == false {
+					eipCheckFailed = true
+					start = time.Now()
+				}
 				(*failure).Inc()
 				continue
 			}
@@ -80,8 +86,17 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 			}
 			if _, ok := egressIPs[resBodyStr]; ok {
 				(*eipTick).Inc()
+				if eipCheckFailed == true {
+					eipCheckFailed = false
+					(*eipRecoveryLatency).Set(time.Now().Sub(start).Seconds())
+					start = time.Now()
+				}
 			} else {
 				(*nonEIPTick).Inc()
+				if eipCheckFailed == false {
+					eipCheckFailed = true
+					start = time.Now()
+				}
 			}
 		}
 		if delayBetweenReq != 0 {
@@ -245,11 +260,17 @@ func startMetricsServer(stop <-chan struct{}, wg *sync.WaitGroup) {
 	}()
 }
 
-func buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq int) (*prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge) {
+func buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq int) (*prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge) {
 	var eipStartUpLatency = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "scale",
 		Name:      "eip_startup_latency_total",
 		Help: fmt.Sprintf("time it takes in seconds for a connection to have a source IP of EgressIP at startup"+
+			" with polling interval of %d seconds", delayBetweenStartReq),
+	})
+	var eipRecoveryLatency = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "scale",
+		Name:      "eip_recovery_latency",
+		Help: fmt.Sprintf("time it takes in seconds for an Egress IP connection to recover from failure"+
 			" with polling interval of %d seconds", delayBetweenStartReq),
 	})
 
@@ -272,8 +293,9 @@ func buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq int) (*promet
 	})
 	// create metrics registry and register metrics
 	prometheus.MustRegister(eipStartUpLatency)
+	prometheus.MustRegister(eipRecoveryLatency)
 	prometheus.MustRegister(eipTick)
 	prometheus.MustRegister(nonEIPTick)
 	prometheus.MustRegister(failure)
-	return &eipStartUpLatency, &eipTick, &nonEIPTick, &failure
+	return &eipStartUpLatency, &eipRecoveryLatency, &eipTick, &nonEIPTick, &failure
 }

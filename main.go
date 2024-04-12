@@ -36,13 +36,13 @@ func main() {
 	stop := registerSignalHandler()
 	extHost, extPort, egressIPsStr, delayBetweenStartReq, startTimeout, delayBetweenReq, timeout := processEnvVars()
 	egressIPs := buildEIPMap(egressIPsStr)
-	eipStartUpLatency, eipRecoveryLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq)
+	startupNonEIPTick, eipStartUpLatency, eipRecoveryLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq)
 	wg.Add(2)
 	startMetricsServer(stop, wg)
 	url := buildDstURL(extHost, extPort)
 	// begin requests until Egress IP found
 	wg.Add(1)
-	go checkDurationForEIPAtStartup(stop, wg, egressIPs, url, eipStartUpLatency, failure, delayBetweenStartReq, startTimeout)
+	go checkDurationForEIPAtStartup(stop, wg, egressIPs, url, startupNonEIPTick, eipStartUpLatency, failure, delayBetweenStartReq, startTimeout)
 	wg.Add(1)
 	go checkEIPAndNonEIPUntilStop(stop, wg, egressIPs, url, eipRecoveryLatency, eipTick, nonEIPTick, failure, delayBetweenReq, timeout)
 	wg.Wait()
@@ -107,7 +107,7 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 }
 
 func checkDurationForEIPAtStartup(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, targetURL string,
-	eipStartUpLatency *prometheus.Gauge, failure *prometheus.Gauge, delayBetweenReq, timeout int) {
+	startupNonEIPTick *prometheus.Gauge, eipStartUpLatency *prometheus.Gauge, failure *prometheus.Gauge, delayBetweenReq, timeout int) {
 	log.Print("## checkDurationForEIPAtStartup: Polling until Egress IP seen as source IP")
 	defer wg.Done()
 	start := time.Now()
@@ -141,6 +141,8 @@ func checkDurationForEIPAtStartup(stop <-chan struct{}, wg *sync.WaitGroup, egre
 			if _, ok := egressIPs[resBodyStr]; ok {
 				(*eipStartUpLatency).Set(time.Now().Sub(start).Seconds())
 				done = true
+			} else {
+				(*startupNonEIPTick).Inc()
 			}
 		}
 		if delayBetweenReq != 0 {
@@ -260,7 +262,13 @@ func startMetricsServer(stop <-chan struct{}, wg *sync.WaitGroup) {
 	}()
 }
 
-func buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq int) (*prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge) {
+func buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq int) (*prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge, *prometheus.Gauge) {
+	var startupNonEIPTick = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: "scale",
+		Name:      "startup_non_eip_total",
+		Help:      fmt.Sprintf("during startup, increments every time EgressIP not seen as source IP - increments every %d seconds if seen", delayBetweenStartReq),
+	})
+
 	var eipStartUpLatency = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: "scale",
 		Name:      "eip_startup_latency_total",
@@ -292,10 +300,11 @@ func buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq int) (*promet
 		Help:      fmt.Sprintf("increments every time there is a connection failure - increments every %d seconds if seen", delayBetweenReq),
 	})
 	// create metrics registry and register metrics
+	prometheus.MustRegister(startupNonEIPTick)
 	prometheus.MustRegister(eipStartUpLatency)
 	prometheus.MustRegister(eipRecoveryLatency)
 	prometheus.MustRegister(eipTick)
 	prometheus.MustRegister(nonEIPTick)
 	prometheus.MustRegister(failure)
-	return &eipStartUpLatency, &eipRecoveryLatency, &eipTick, &nonEIPTick, &failure
+	return &startupNonEIPTick, &eipStartUpLatency, &eipRecoveryLatency, &eipTick, &nonEIPTick, &failure
 }

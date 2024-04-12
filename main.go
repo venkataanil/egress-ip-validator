@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -20,7 +21,7 @@ import (
 
 const (
 	serverEnvKey              = "EXT_SERVER_HOST"
-	portEnvKey                = "EXT_SERVER_PORT"
+	portsEnvKey                = "EXT_SERVER_PORTS"
 	egressIPsEnvKey           = "EGRESS_IPS"
 	delayBetweenRequestEnvKey = "DELAY_BETWEEN_REQ_SEC"
 	delayBetweenStartRequestEnvKey = "DELAY_BETWEEN_START_REQ_SEC"
@@ -34,21 +35,20 @@ const (
 func main() {
 	wg := &sync.WaitGroup{}
 	stop := registerSignalHandler()
-	extHost, extPort, egressIPsStr, delayBetweenStartReq, startTimeout, delayBetweenReq, timeout := processEnvVars()
+	extHost, extPorts, egressIPsStr, delayBetweenStartReq, startTimeout, delayBetweenReq, timeout := processEnvVars()
 	egressIPs := buildEIPMap(egressIPsStr)
 	startupNonEIPTick, eipStartUpLatency, eipRecoveryLatency, eipTick, nonEIPTick, failure := buildAndRegisterMetrics(delayBetweenReq, delayBetweenStartReq)
 	wg.Add(2)
 	startMetricsServer(stop, wg)
-	url := buildDstURL(extHost, extPort)
 	// begin requests until Egress IP found
 	wg.Add(1)
-	go checkDurationForEIPAtStartup(stop, wg, egressIPs, url, startupNonEIPTick, eipStartUpLatency, failure, delayBetweenStartReq, startTimeout)
+	go checkDurationForEIPAtStartup(stop, wg, egressIPs, extHost, extPorts, startupNonEIPTick, eipStartUpLatency, failure, delayBetweenStartReq, startTimeout)
 	wg.Add(1)
-	go checkEIPAndNonEIPUntilStop(stop, wg, egressIPs, url, eipRecoveryLatency, eipTick, nonEIPTick, failure, delayBetweenReq, timeout)
+	go checkEIPAndNonEIPUntilStop(stop, wg, egressIPs, extHost, extPorts, eipRecoveryLatency, eipTick, nonEIPTick, failure, delayBetweenReq, timeout)
 	wg.Wait()
 }
 
-func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, url string,
+func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, extHost, extPorts string,
         eipRecoveryLatency *prometheus.Gauge, eipTick, nonEIPTick *prometheus.Gauge, failure *prometheus.Gauge, delayBetweenReq, timeout int) {
 	log.Print("## checkEIPAndNonEIPUntilStop: Polling source IP and increment metric counts for when Egress IP or another IP seen as source IP")
 	defer wg.Done()
@@ -62,6 +62,8 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 		case <-stop:
 			done = true
 		default:
+			//return fmt.Sprintf("http://%s:%s", host, port)
+			url := buildDstURL(extHost, extPorts)
 			res, err := client.Get(url)
 			if err != nil {
 				log.Printf("checkEIPAndNonEIPUntilStop: Error: Failed to talk to %q: %v", url, err)
@@ -106,7 +108,7 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 	log.Print("## checkEIPAndNonEIPUntilStop: Finished polling source IP")
 }
 
-func checkDurationForEIPAtStartup(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, targetURL string,
+func checkDurationForEIPAtStartup(stop <-chan struct{}, wg *sync.WaitGroup, egressIPs map[string]struct{}, extHost, extPorts string,
 	startupNonEIPTick *prometheus.Gauge, eipStartUpLatency *prometheus.Gauge, failure *prometheus.Gauge, delayBetweenReq, timeout int) {
 	log.Print("## checkDurationForEIPAtStartup: Polling until Egress IP seen as source IP")
 	defer wg.Done()
@@ -120,6 +122,7 @@ func checkDurationForEIPAtStartup(stop <-chan struct{}, wg *sync.WaitGroup, egre
 			done = true
 		default:
 			log.Printf("checkDurationForEIPAtStartup: Attempting connection to detect Egress IP at startup")
+			targetURL := buildDstURL(extHost, extPorts)
 			res, err := client.Get(targetURL)
 			if err != nil {
 				log.Printf("checkDurationForEIPAtStartup: Error: Failed to talk to %q: %v", targetURL, err)
@@ -156,8 +159,20 @@ func isIP(s string) bool {
 	return net.ParseIP(s) != nil
 }
 
-func buildDstURL(host, port string) string {
-	return fmt.Sprintf("http://%s:%s", host, port)
+func buildDstURL(host, portRange string) string {
+	// Parse the port range string
+	ports := strings.Split(portRange, ":")
+	startPort, _ := strconv.Atoi(ports[0])
+	endPort, _ := strconv.Atoi(ports[1])
+
+	// Seed the random number generator
+	rand.Seed(time.Now().UnixNano())
+
+	// Generate a random port within the specified range
+	randomPort := startPort + rand.Intn(endPort-startPort+1)
+
+	// Construct the URL with the randomly selected port
+	return fmt.Sprintf("http://%s:%d", host, randomPort)
 }
 
 func getHTTPClient(timeout int) http.Client {
@@ -185,9 +200,9 @@ func processEnvVars() (string, string, string, int, int, int, int) {
 	if extHost == "" {
 		panic(fmt.Sprintf(envKeyErrMsg, serverEnvKey))
 	}
-	extPort := os.Getenv(portEnvKey)
-	if extPort == "" {
-		panic(fmt.Sprintf(envKeyErrMsg, portEnvKey))
+	extPorts := os.Getenv(portsEnvKey)
+	if extPorts == "" {
+		panic(fmt.Sprintf(envKeyErrMsg, portsEnvKey))
 	}
 	egressIPsStr := os.Getenv(egressIPsEnvKey)
 	if egressIPsStr == "" {
@@ -226,7 +241,7 @@ func processEnvVars() (string, string, string, int, int, int, int) {
 			panic(fmt.Sprintf("failed to parse request timeout %q: %v", reqStartTimeoutStr, err))
 		}
 	}
-	return extHost, extPort, egressIPsStr, delayBetweenStartReq, requestStartTimeout, delayBetweenReq, requestTimeout
+	return extHost, extPorts, egressIPsStr, delayBetweenStartReq, requestStartTimeout, delayBetweenReq, requestTimeout
 }
 
 func registerSignalHandler() chan struct{} {

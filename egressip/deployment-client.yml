@@ -44,20 +44,20 @@ spec:
         env:
         - name: EXT_SERVER_HOST
           value: "192.168.0.155"
-        - name: EXT_SERVER_PORT
-          value: "{{ add 9002 (mod .Iteration 60) }}"
+        - name: EXT_SERVER_PORTS
+          value: "9002:9061"
         - name: EGRESS_IPS
             {{- $eips := (splitList " " (GetIPAddress .eipAddresses .Iteration .addrPerIteration) | join ",") }}
           value: "{{$eips}}"
         - name: DELAY_BETWEEN_START_REQ_SEC 
           value: "1"
         - name: REQ_START_TIMEOUT_SEC
-          value: "1"
+          value: "0"
         - name: DELAY_BETWEEN_REQ_SEC
-          value: "10"
+          value: "0"
         - name: REQ_TIMEOUT_SEC
-          value: "5"
-        imagePullPolicy: Always
+          value: "1"
+        imagePullPolicy: IfNotPresent
         securityContext:
           privileged: false
         volumeMounts:

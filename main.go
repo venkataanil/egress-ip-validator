@@ -82,7 +82,6 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 	start := time.Now()
 	var eipCheckFailed bool
 	var startupLatencySet bool
-	var client *http.Client
 	var err error
 	var req *http.Request
 	var res *http.Response
@@ -94,13 +93,7 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 			done = true
 		default:
 			err = nil
-			client = &http.Client{
-				Timeout: time.Duration(timeout) * time.Second,
-				Transport: &http.Transport{
-					MaxIdleConnsPerHost: -1,
-					DisableKeepAlives: true,
-				},
-			}
+			client := getHTTPClient(timeout)
 			// Create a new request
 			url := buildDstURL(extHost, extPorts)
 			req, err = http.NewRequest("GET", url, nil)
@@ -108,7 +101,6 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 				log.Printf("Error: %v , while calling http.NewRequest", err)
 			} else {
 				// Set Close to true to indicate that the connection should be closed after sending the request
-				req.Close = true
 				res, err = client.Do(req)
 				if err != nil {
 					log.Printf("Error: %v , while calling client.Do", err)
@@ -161,7 +153,6 @@ func checkEIPAndNonEIPUntilStop(stop <-chan struct{}, wg *sync.WaitGroup, egress
 					}
 				}
 			}
-			client = nil
 			res = nil
 			req = nil
 			if delayBetweenReq != 0 {
@@ -194,12 +185,8 @@ func buildDstURL(host, portRange string) string {
 }
 
 func getHTTPClient(timeout int) http.Client {
-	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.MaxIdleConnsPerHost = -1
-	t.DisableKeepAlives = true
 	return http.Client{
 		Timeout: time.Duration(timeout) * time.Second,
-		Transport: t,
 	}
 }
 
